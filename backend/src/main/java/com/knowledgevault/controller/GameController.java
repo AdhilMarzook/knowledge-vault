@@ -11,7 +11,6 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.validation.annotation.Validated;
-import com.knowledgevault.service.provider.ProviderOrchestrator;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -31,7 +30,6 @@ public class GameController {
     private final PlayerService playerService;
     private final QuestGenerationService questGenerationService;
     private final VaultUserDetailsService userDetailsService;
-    private final ProviderOrchestrator orchestrator;
     private final AiProviderRouter providerRouter;
 
     public GameController(
@@ -90,7 +88,6 @@ public class GameController {
         return ResponseEntity.ok(playerService.processAnswer(request));
     }
 
-    /** Shows which AI provider is active and their health — useful for debugging */
     @GetMapping("/providers/status")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Map<String, Object>> providerStatus() {

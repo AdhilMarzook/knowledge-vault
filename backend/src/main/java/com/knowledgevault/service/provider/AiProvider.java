@@ -6,28 +6,17 @@ package com.knowledgevault.service.provider;
  */
 public interface AiProvider {
 
-    /** Human-readable name shown in logs and /api/ai/status */
+    /** Human-readable name shown in logs and /api/providers/status */
     String getName();
 
     /** Whether this provider has an API key configured */
-    boolean isAvailable();
+    boolean isConfigured();
 
     /**
      * Send a prompt and return the raw model text.
-     * @throws AiProviderException on any failure — timeout, auth error, parse failure, etc.
+     * @param prompt    the full prompt to send
+     * @param maxTokens maximum tokens to generate
+     * @throws RuntimeException on any failure — timeout, auth error, parse failure, etc.
      */
-    String complete(String prompt) throws AiProviderException;
-
-    class AiProviderException extends Exception {
-        private final String providerName;
-        public AiProviderException(String providerName, String message, Throwable cause) {
-            super(message, cause);
-            this.providerName = providerName;
-        }
-        public AiProviderException(String providerName, String message) {
-            super(message);
-            this.providerName = providerName;
-        }
-        public String getProviderName() { return providerName; }
-    }
+    String complete(String prompt, int maxTokens);
 }

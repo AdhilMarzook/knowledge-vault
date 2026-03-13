@@ -5,7 +5,7 @@ import java.util.List;
 public class Quest {
     private String id;
     private String skill;
-    private int difficulty; // 1-10
+    private int difficulty;
     private String question;
     private List<String> choices;
     private int correctIndex;
@@ -14,8 +14,8 @@ public class Quest {
     private int scoreReward;
     private String npcName;
     private String npcDialogue;
+    private String generatedBy; // which AI provider generated this quest
 
-    // Getters and Setters
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getSkill() { return skill; }
@@ -38,5 +38,6 @@ public class Quest {
     public void setNpcName(String npcName) { this.npcName = npcName; }
     public String getNpcDialogue() { return npcDialogue; }
     public void setNpcDialogue(String npcDialogue) { this.npcDialogue = npcDialogue; }
+    public String getGeneratedBy() { return generatedBy; }
+    public void setGeneratedBy(String generatedBy) { this.generatedBy = generatedBy; }
 }
-// Note: append generatedBy field — add before final closing brace in Quest.java

@@ -3,25 +3,20 @@ package com.knowledgevault.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.knowledgevault.model.Quest;
-import com.knowledgevault.service.provider.ProviderOrchestrator;
+import com.knowledgevault.service.provider.AiProviderRouter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 
-/**
- * Generates AI-powered quests via the multi-provider orchestrator.
- * Provider priority: Groq → Gemini → OpenRouter → Mistral → Claude (paid)
- * Falls back to a built-in static question if ALL providers fail.
- */
 @Service
 public class QuestGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(QuestGenerationService.class);
 
-    private final ProviderOrchestrator orchestrator;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final AiProviderRouter providerRouter;
+    private final ObjectMapper objectMapper;
 
     private static final List<String> NPC_NAMES = List.of(
         "Overseer Vance", "Dr. Elara Mote", "Professor Grim", "The Archivist",
@@ -33,11 +28,13 @@ public class QuestGenerationService {
         "The old world prized %s above all else.",
         "Only the learned survive. Prove your %s.",
         "I've seen raiders fail this. Show me your %s.",
-        "In the wasteland, %s separates the living from the dead.",
+        "The wasteland will test your %s. Are you ready?",
+        "Pre-war scholars died for this %s knowledge. Honor them."
     };
 
-    public QuestGenerationService(ProviderOrchestrator orchestrator) {
-        this.orchestrator = orchestrator;
+    public QuestGenerationService(AiProviderRouter providerRouter) {
+        this.providerRouter = providerRouter;
+        this.objectMapper   = new ObjectMapper();
     }
 
     public Quest generateQuest(String skill, int skillLevel) {
@@ -45,100 +42,117 @@ public class QuestGenerationService {
         String prompt  = buildPrompt(skill, difficulty);
 
         try {
-            ProviderOrchestrator.ProviderResponse response = orchestrator.complete(prompt);
-            Quest quest = parseQuest(response.text(), skill, difficulty);
-            quest.setGeneratedBy(response.usedProvider());
-            attachNpc(quest, skill);
+            String rawResponse = providerRouter.complete(prompt, 500);
+            Quest quest = parseQuestFromResponse(rawResponse, skill, difficulty);
+            quest.setGeneratedBy(providerRouter.getActiveProviderName());
             return quest;
-
-        } catch (ProviderOrchestrator.AllProvidersFailedException e) {
-            log.error("All AI providers failed — serving static fallback: {}", e.getMessage());
-            return staticFallback(skill, difficulty);
-
         } catch (Exception e) {
-            log.error("Unexpected error during quest generation: {}", e.getMessage(), e);
-            return staticFallback(skill, difficulty);
+            log.error("All AI providers failed for skill={} difficulty={}: {}", skill, difficulty, e.getMessage());
+            return generateFallbackQuest(skill, difficulty);
         }
     }
 
-    // ── Prompt ────────────────────────────────────────────────────────────────
-
     private String buildPrompt(String skill, int difficulty) {
-        return """
-            You are a quest generator for a Fallout-inspired knowledge RPG.
-            Generate ONE multiple-choice question for the skill: %s
-            Difficulty: %d/10  (1=trivial, 10=expert/obscure)
+        return String.format("""
+            You are an AI quest generator for a Fallout-inspired knowledge RPG.
+            Generate a multiple-choice question for the skill: %s
+            Difficulty: %d/10 (1=trivial, 10=expert-only)
 
-            Respond with ONLY valid JSON — no markdown, no preamble:
+            Return ONLY valid JSON — no markdown, no preamble, no explanation outside the JSON:
             {
-              "question": "...",
-              "choices": ["A", "B", "C", "D"],
+              "question": "The question text (max 200 chars)",
+              "choices": ["Option A", "Option B", "Option C", "Option D"],
               "correctIndex": 0,
-              "explanation": "..."
+              "explanation": "Why the answer is correct (max 150 chars)"
             }
 
             Rules:
-            - All 4 choices must be plausible but only one correct
-            - correctIndex is 0–3
-            - question: max 200 characters
-            - explanation: max 150 characters
-            - Higher difficulty = rarer knowledge, more nuance
-            """.formatted(skill, difficulty);
+            - All 4 choices must be plausible, not obviously wrong
+            - correctIndex is 0, 1, 2, or 3
+            - Higher difficulty = more obscure, nuanced questions
+            - Output pure JSON only, nothing else
+            """, skill, difficulty);
     }
 
-    // ── Response parsing ──────────────────────────────────────────────────────
+    private Quest parseQuestFromResponse(String raw, String skill, int difficulty) throws Exception {
+        // Strip markdown code fences if any provider wraps the JSON
+        String cleaned = raw.trim()
+            .replaceAll("(?s)```json\\s*", "")
+            .replaceAll("(?s)```\\s*", "")
+            .trim();
 
-    private Quest parseQuest(String raw, String skill, int difficulty) throws Exception {
-        // Strip markdown code fences if any model wraps the JSON
-        String cleaned = raw.strip()
-            .replaceAll("(?s)^```json\\s*", "")
-            .replaceAll("(?s)^```\\s*",     "")
-            .replaceAll("(?s)```$",          "")
-            .strip();
+        // Extract just the JSON object if there's surrounding text
+        int start = cleaned.indexOf('{');
+        int end   = cleaned.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            cleaned = cleaned.substring(start, end + 1);
+        }
 
-        JsonNode data = mapper.readTree(cleaned);
+        JsonNode data = objectMapper.readTree(cleaned);
+
+        if (!data.has("question") || !data.has("choices") || !data.has("correctIndex")) {
+            throw new IllegalArgumentException("Missing required fields in AI response");
+        }
+
+        List<String> choices = new ArrayList<>();
+        data.path("choices").forEach(c -> choices.add(c.asText()));
+
+        if (choices.size() != 4) {
+            throw new IllegalArgumentException("Expected 4 choices, got " + choices.size());
+        }
+
+        int correctIndex = data.path("correctIndex").asInt();
+        if (correctIndex < 0 || correctIndex > 3) {
+            throw new IllegalArgumentException("Invalid correctIndex: " + correctIndex);
+        }
 
         Quest quest = new Quest();
         quest.setId(UUID.randomUUID().toString());
         quest.setSkill(skill);
         quest.setDifficulty(difficulty);
         quest.setQuestion(data.path("question").asText());
-
-        List<String> choices = new ArrayList<>();
-        data.path("choices").forEach(c -> choices.add(c.asText()));
         quest.setChoices(choices);
-        quest.setCorrectIndex(data.path("correctIndex").asInt());
-        quest.setExplanation(data.path("explanation").asText());
+        quest.setCorrectIndex(correctIndex);
+        quest.setExplanation(data.path("explanation").asText("No explanation provided."));
         quest.setXpReward(difficulty * 50);
         quest.setScoreReward(difficulty * 100);
+        quest.setNpcName(NPC_NAMES.get(new Random().nextInt(NPC_NAMES.size())));
+        quest.setNpcDialogue(buildNpcDialogue(skill));
         return quest;
     }
 
-    // ── NPC ───────────────────────────────────────────────────────────────────
-
-    private void attachNpc(Quest quest, String skill) {
-        String name = NPC_NAMES.get(new Random().nextInt(NPC_NAMES.size()));
+    private String buildNpcDialogue(String skill) {
         String template = NPC_INTRO_TEMPLATES[new Random().nextInt(NPC_INTRO_TEMPLATES.length)];
-        quest.setNpcName(name);
-        quest.setNpcDialogue(String.format(template, skill));
+        return String.format(template, skill);
     }
 
-    // ── Static fallback ───────────────────────────────────────────────────────
+    private Quest generateFallbackQuest(String skill, int difficulty) {
+        Map<String, String[]> fallbacks = Map.of(
+            "Science",     new String[]{"What is the atomic number of Carbon?",        "6","8","12","14",          "0","Carbon has 6 protons in its nucleus."},
+            "History",     new String[]{"Which year did World War II end?",            "1943","1944","1945","1946","2","WWII ended in 1945 with Allied victory."},
+            "Technology",  new String[]{"What does CPU stand for?",                    "Central Processing Unit","Core Processing Utility","Computer Power Unit","Central Power Utility","0","CPU = Central Processing Unit."},
+            "Mathematics", new String[]{"What is Pi to 2 decimal places?",             "3.12","3.14","3.16","3.18","1","Pi is approximately 3.14159..."},
+            "Philosophy",  new String[]{"Who wrote 'The Republic'?",                   "Aristotle","Socrates","Plato","Epicurus","2","Plato wrote The Republic around 380 BC."},
+            "Literature",  new String[]{"Who wrote '1984'?",                           "Aldous Huxley","Ray Bradbury","George Orwell","H.G. Wells","2","George Orwell wrote 1984, published in 1949."},
+            "Geography",   new String[]{"What is the capital of Australia?",           "Sydney","Melbourne","Brisbane","Canberra","3","Canberra has been Australia's capital since 1913."},
+            "Politics",    new String[]{"How many permanent UN Security Council members are there?","3","4","5","6","2","The 5 permanent members are USA, UK, France, Russia, China."}
+        );
 
-    private Quest staticFallback(String skill, int difficulty) {
-        Quest q = new Quest();
-        q.setId(UUID.randomUUID().toString());
-        q.setSkill(skill);
-        q.setDifficulty(difficulty);
-        q.setQuestion("What year did the World Wide Web become publicly available?");
-        q.setChoices(List.of("1983", "1991", "1995", "2001"));
-        q.setCorrectIndex(1);
-        q.setExplanation("Tim Berners-Lee made the World Wide Web public in 1991.");
-        q.setXpReward(difficulty * 50);
-        q.setScoreReward(difficulty * 100);
-        q.setNpcName("The Archivist");
-        q.setNpcDialogue("Knowledge is the only currency that matters out here.");
-        q.setGeneratedBy("STATIC_FALLBACK");
-        return q;
+        String[] q = fallbacks.getOrDefault(skill, fallbacks.get("Science"));
+
+        Quest quest = new Quest();
+        quest.setId(UUID.randomUUID().toString());
+        quest.setSkill(skill);
+        quest.setDifficulty(difficulty);
+        quest.setQuestion(q[0]);
+        quest.setChoices(List.of(q[1], q[2], q[3], q[4]));
+        quest.setCorrectIndex(Integer.parseInt(q[5]));
+        quest.setExplanation(q[6]);
+        quest.setXpReward(difficulty * 50);
+        quest.setScoreReward(difficulty * 100);
+        quest.setNpcName("The Archivist");
+        quest.setNpcDialogue("The AI terminals are offline. Answer from memory, Dweller.");
+        quest.setGeneratedBy("Static Fallback");
+        return quest;
     }
 }

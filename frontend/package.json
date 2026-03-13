@@ -6,7 +6,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "ajv": "^8.12.0"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -20,5 +21,8 @@
     "production": [">0.2%", "not dead", "not op_mini all"],
     "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
   },
-  "proxy": "http://backend:8080"
+  "proxy": "http://backend:8080",
+  "resolutions": {
+    "ajv": "^8.12.0"
+  }
 }
